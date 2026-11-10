@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import chromadb
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # use free local api only
 ollama_url = "http://localhost:11434/api/embed"
@@ -19,62 +20,25 @@ collection_name = "johor_election"
 # so keep each chunk around 250 words to leave space for articel title
 max_words = 250
 
+# repeat around 50 words between chunks so meaning is not cut off
+overlap_words = 50
+
 # Count how many words are in the text
 def count_words(text):
     return len(text.split())
 
-# Split a long paragraph into smaller pieces
-def split_long_paragraph(paragraph):
-    # if 1 paragraph is too long just cut it by words
-    words = paragraph.split() # split paragraph into individual words
-    pieces = []
-
-     # take 250 words at one time
-    for i in range(0, len(words), max_words):
-        pieces.append(" ".join(words[i:i + max_words]))
-    return pieces
+# use langchain splitter to cut the article into chunks
+# try to split by paragraph first, then by line, then by sentence, then by word
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=max_words,
+    chunk_overlap=overlap_words,
+    length_function=count_words,  # measure size by words, not characters
+    separators=["\n\n", "\n", ". ", " ", ""]
+)
 
 # Split the full article into smaller chunks
 def make_chunks(content):
-    paragraphs = []
-
-    # Read the article paragraph by paragraph
-    for p in content.split("\n"):
-        p = p.strip() # remove unnecessary spaces
-        if p == "":
-            continue  # skip empty paragraphs
-
-        # split paragraphs that are longer than 250 words
-        if count_words(p) > max_words:
-            paragraphs.extend(split_long_paragraph(p))
-        else:
-            paragraphs.append(p)
-
-    chunks = []
-    current = []
-
-
-    # combine paragraphs until the chunk reaches 250 words
-    for p in paragraphs:
-        current_words = count_words(" ".join(current))
-
-        # Check whether adding the next paragraph exceeds 250 words
-        if current_words + count_words(p) > max_words and len(current) > 0:
-            chunks.append("\n".join(current))
-
-            # do overlap where kee the last paragraph for the next chunk
-            last_paragraph = current[-1]
-            if count_words(last_paragraph) + count_words(p) <= max_words:
-                current = [last_paragraph]
-            else:
-                current = []
-
-        current.append(p)
-
-    # save the remaining text as the final chunk
-    if len(current) > 0:
-        chunks.append("\n".join(current))
-
+    chunks = text_splitter.split_text(content)
     return chunks
 
 
