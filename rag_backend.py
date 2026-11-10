@@ -1,6 +1,8 @@
 import os
 import requests
 import chromadb
+from langchain_ollama import OllamaEmbeddings
+from langchain_chroma import Chroma
 
 # using local model. choose ollama because maybe powerful LLM for free version
 ollama_host = "http://localhost:11434"
@@ -44,56 +46,46 @@ no_database_message = "The article database is not ready yet. Please run  python
 # Connect to the local chromadb folder
 client = chromadb.PersistentClient(path=db_folder)
 try:
-    collection = client.get_collection(collection_name)
+    client.get_collection(collection_name)
+    database_ready = True
 except Exception:
     # the collection only exists after running scrape.py (or chunk_and_embed.py)
-    collection = None
+    database_ready = False
 
+# langchain part: only used to search the closest chunks
+# OllamaEmbeddings turn the question into numbers using the same local embed model
+embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
 
-def get_embedding(question):
-    # Convert the user question into an embedding
-    # embed model will uses the instruction to understand that we want to search for relevant passages
-    data = {
-        "model": embed_model,
-        "input": ["Represent this sentence for searching relevant passages: " + question]
-    }
-    # send question to ollama
-    response = requests.post(ollama_host + "/api/embed", json=data)
-
-    # convert response to dictionary and return the embedding number based on question
-    result = response.json()
-    return result["embeddings"][0]
+# connect langchain to the same chromadb collection we built in chunk_and_embed.py
+vector_store = Chroma(
+    client=client,
+    collection_name=collection_name,
+    embedding_function=embeddings
+)
 
 
 def search_articles(question):
-    q_embedding = get_embedding(question)
+    # embed model uses this instruction to know we want to search for relevant passages
+    search_text = "Represent this sentence for searching relevant passages: " + question
 
-    # ask chromadb for the closest chunks
-    results = collection.query(
-        query_embeddings=[q_embedding],
-        n_results=top_k
-    )
-
-    # chromadb return a list for each question, we only ask 1 question so take [0]
-    texts = results["documents"][0]
-    metadatas = results["metadatas"][0]
-    distances = results["distances"][0]
+    # find the closes chunks
+    # it returns a list of document and score. score is cosine distance (lower = more similar)
+    results = vector_store.similarity_search_with_score(search_text, k=top_k)
 
     # Go through every matching news snippet.
     snippets = []
-    for i in range(len(texts)):
-        meta = metadatas[i]
+    for doc, distance in results:
+        meta = doc.metadata
 
-        # chromadb already gives cosine distance (lower distance means more similar)
         # Keep only the information we need for answering and showing sources
         snippets.append({
-            "text": texts[i],
+            "text": doc.page_content,
             "title": meta["title"],
             "date": meta["publish_date"][:10],
             "author": meta["author"],
             "section": meta["section"],
             "url": meta["url"],
-            "distance": distances[i]
+            "distance": distance
         })
     return snippets
 
@@ -154,7 +146,7 @@ def answer_question(question):
         return {"answer": "Please type a question.", "sources": []}
 
     # check whether the database is created already
-    if collection is None:
+    if not database_ready:
         return {"answer": no_database_message, "sources": []}
 
     # search chromadb for relevant snippets
